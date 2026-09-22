@@ -5,6 +5,10 @@ on:
   push:
     branches:
       - main
+      - master
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -17,16 +21,13 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Install dependencies
-        run: npm install
+        run: npm install --legacy-peer-deps --no-audit --no-fund
 
       - name: Build web app
         run: npm run build
-
-      - name: Sync Capacitor
-        run: npx cap sync android
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -34,15 +35,73 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Setup Android SDK
+      - name: Setup Android
         uses: android-actions/setup-android@v3
 
-      - name: Build Debug APK
+      - name: Setup Capacitor Android
+        run: |
+          rm -rf android
+          npx cap add android
+
+          mkdir -p android/app/src/main/java/com/abdullahataya/fooddistribution
+
+          cp native/android/com/abdullahataya/fooddistribution/*.java \
+            android/app/src/main/java/com/abdullahataya/fooddistribution/
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          manifest = Path("android/app/src/main/AndroidManifest.xml")
+          s = manifest.read_text()
+
+          permissions = """
+              <uses-permission android:name="android.permission.BLUETOOTH" />
+              <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+              <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+              <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+          """
+
+          if "android.permission.BLUETOOTH_CONNECT" not in s:
+              s = s.replace("<application", permissions + "\n    <application", 1)
+
+          s = s.replace(
+              'android:name=".MainActivity"',
+              'android:name="com.abdullahataya.fooddistribution.MainActivity"'
+          )
+
+          manifest.write_text(s)
+
+          gradle = Path("android/app/build.gradle")
+          if gradle.exists():
+              s = gradle.read_text()
+              s = s.replace(
+                  'namespace "com.example.app"',
+                  'namespace "com.abdullahataya.fooddistribution"'
+              )
+              s = s.replace(
+                  'applicationId "com.example.app"',
+                  'applicationId "com.abdullahataya.fooddistribution"'
+              )
+              gradle.write_text(s)
+          PY
+
+          npx cap sync android
+
+      - name: Build APK
         working-directory: android
-        run: ./gradlew assembleDebug
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Prepare APK
+        run: |
+          mkdir -p app-build
+          APK=$(find android/app/build/outputs/apk/debug -name "*.apk" | head -n 1)
+          test -f "$APK"
+          cp "$APK" app-build/AlAtaya-debug.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: AlAtaya-debug
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: AlAtaya-Android-APK
+          path: app-build/AlAtaya-debug.apk
