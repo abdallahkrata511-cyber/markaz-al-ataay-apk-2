@@ -7,6 +7,9 @@ on:
       - main
       - master
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -14,20 +17,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Extract complete project
-        run: |
-          ZIP=$(find . -maxdepth 1 -name "*.zip" | head -n 1)
-          if [ -n "$ZIP" ]; then
-            mkdir -p /tmp/alataya
-            unzip -q "$ZIP" -d /tmp/alataya
-            ROOT=$(find /tmp/alataya -mindepth 1 -maxdepth 1 -type d | head -n 1)
-            cp -a "$ROOT"/. .
-            rm -rf /tmp/alataya
-          fi
-
-          test -f package.json
-          test -f src/main.tsx
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -46,10 +35,12 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Setup Android
-        uses: android-actions/setup-android@v3
+      - name: Prepare Android SDK
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools"
 
-      - name: Setup Capacitor Android
+      - name: Create Android project
         run: |
           rm -rf android
           npx cap add android
@@ -58,6 +49,29 @@ jobs:
 
           cp native/android/com/abdullahataya/fooddistribution/*.java \
             android/app/src/main/java/com/abdullahataya/fooddistribution/
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          manifest = Path("android/app/src/main/AndroidManifest.xml")
+          s = manifest.read_text()
+
+          perms = """    <uses-permission android:name="android.permission.BLUETOOTH" />
+              <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+              <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+              <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+          """
+
+          if "android.permission.BLUETOOTH_CONNECT" not in s:
+              s = s.replace("<application", perms + "\n    <application", 1)
+
+          s = s.replace(
+              'android:name=".MainActivity"',
+              'android:name="com.abdullahataya.fooddistribution.MainActivity"'
+          )
+
+          manifest.write_text(s)
+          PY
 
           npx cap sync android
 
