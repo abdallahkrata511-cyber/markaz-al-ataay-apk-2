@@ -18,15 +18,29 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Detect project directory
+        run: |
+          if [ -f "package.json" ]; then
+            echo "PROJECT_DIR=." >> "$GITHUB_ENV"
+          elif [ -f "alataya/package.json" ]; then
+            echo "PROJECT_DIR=alataya" >> "$GITHUB_ENV"
+          else
+            echo "package.json not found"
+            find . -maxdepth 3 -type f | head -100
+            exit 1
+          fi
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
 
       - name: Install dependencies
+        working-directory: ${{ env.PROJECT_DIR }}
         run: npm install --legacy-peer-deps --no-audit --no-fund
 
       - name: Build web app
+        working-directory: ${{ env.PROJECT_DIR }}
         run: npm run build
 
       - name: Setup Java
@@ -37,10 +51,11 @@ jobs:
 
       - name: Prepare Android SDK
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
           sdkmanager "platform-tools"
 
       - name: Create Android project
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           rm -rf android
           npx cap add android
@@ -50,33 +65,10 @@ jobs:
           cp native/android/com/abdullahataya/fooddistribution/*.java \
             android/app/src/main/java/com/abdullahataya/fooddistribution/
 
-          python3 - <<'PY'
-          from pathlib import Path
-
-          manifest = Path("android/app/src/main/AndroidManifest.xml")
-          s = manifest.read_text()
-
-          perms = """    <uses-permission android:name="android.permission.BLUETOOTH" />
-              <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
-              <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-              <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
-          """
-
-          if "android.permission.BLUETOOTH_CONNECT" not in s:
-              s = s.replace("<application", perms + "\n    <application", 1)
-
-          s = s.replace(
-              'android:name=".MainActivity"',
-              'android:name="com.abdullahataya.fooddistribution.MainActivity"'
-          )
-
-          manifest.write_text(s)
-          PY
-
           npx cap sync android
 
       - name: Build APK
-        working-directory: android
+        working-directory: ${{ env.PROJECT_DIR }}/android
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon --stacktrace
@@ -85,4 +77,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: AlAtaya-Android-APK
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: ${{ env.PROJECT_DIR }}/android/app/build/outputs/apk/debug/app-debug.apk
