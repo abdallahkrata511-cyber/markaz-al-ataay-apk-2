@@ -3,12 +3,10 @@ name: Build Android APK
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
-      - master
+    branches: [main, master]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -18,17 +16,43 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Detect project directory
+      - name: Prepare project
+        id: prepare
+        shell: bash
         run: |
-          if [ -f "package.json" ]; then
-            echo "PROJECT_DIR=." >> "$GITHUB_ENV"
-          elif [ -f "alataya/package.json" ]; then
-            echo "PROJECT_DIR=alataya" >> "$GITHUB_ENV"
-          else
-            echo "package.json not found"
-            find . -maxdepth 3 -type f | head -100
+          set -e
+
+          if [ -f "src/main.tsx" ] && [ -f "package.json" ]; then
+            echo "project_dir=." >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          ZIP=$(find . -maxdepth 2 -type f -iname "*.zip" | head -n 1)
+
+          if [ -z "$ZIP" ]; then
+            echo "ERROR: Project ZIP not found."
             exit 1
           fi
+
+          echo "Found ZIP: $ZIP"
+
+          rm -rf .build-source
+          mkdir .build-source
+
+          unzip -q "$ZIP" -d .build-source
+
+          PROJECT=$(find .build-source -type f -name "main.tsx" \
+            -exec sh -c 'd="$(dirname "$(dirname "$1")")"; if [ -f "$d/package.json" ]; then echo "$d"; exit 0; fi' _ {} \; \
+            | head -n 1)
+
+          if [ -z "$PROJECT" ]; then
+            echo "ERROR: Could not find project containing src/main.tsx and package.json."
+            find .build-source -maxdepth 4 -type f | head -100
+            exit 1
+          fi
+
+          echo "Project directory: $PROJECT"
+          echo "project_dir=$PROJECT" >> "$GITHUB_OUTPUT"
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -36,45 +60,92 @@ jobs:
           node-version: 22
 
       - name: Install dependencies
-        working-directory: ${{ env.PROJECT_DIR }}
+        working-directory: ${{ steps.prepare.outputs.project_dir }}
         run: npm install --legacy-peer-deps --no-audit --no-fund
 
       - name: Build web app
-        working-directory: ${{ env.PROJECT_DIR }}
+        working-directory: ${{ steps.prepare.outputs.project_dir }}
         run: npm run build
 
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: "21"
 
-      - name: Prepare Android SDK
+      - name: Setup Android project
+        working-directory: ${{ steps.prepare.outputs.project_dir }}
+        shell: bash
         run: |
-          yes | sdkmanager --licenses >/dev/null 2>&1 || true
-          sdkmanager "platform-tools"
+          set -e
 
-      - name: Create Android project
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: |
-          rm -rf android
-          npx cap add android
+          if [ ! -d "android" ]; then
+            npx cap add android
+          fi
 
           mkdir -p android/app/src/main/java/com/abdullahataya/fooddistribution
 
-          cp native/android/com/abdullahataya/fooddistribution/*.java \
-            android/app/src/main/java/com/abdullahataya/fooddistribution/
+          if [ -d "native/android/com/abdullahataya/fooddistribution" ]; then
+            cp native/android/com/abdullahataya/fooddistribution/*.java \
+              android/app/src/main/java/com/abdullahataya/fooddistribution/
+          fi
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          manifest = Path("android/app/src/main/AndroidManifest.xml")
+          if manifest.exists():
+              s = manifest.read_text()
+
+              permissions = """
+              <uses-permission android:name="android.permission.BLUETOOTH" />
+              <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+              <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+              <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+              """
+
+              if "android.permission.BLUETOOTH_CONNECT" not in s:
+                  s = s.replace("<application", permissions + "\n    <application", 1)
+
+              s = s.replace(
+                  'android:name=".MainActivity"',
+                  'android:name="com.abdullahataya.fooddistribution.MainActivity"'
+              )
+
+              manifest.write_text(s)
+
+          gradle = Path("android/app/build.gradle")
+          if gradle.exists():
+              s = gradle.read_text()
+              s = s.replace(
+                  'namespace "com.example.app"',
+                  'namespace "com.abdullahataya.fooddistribution"'
+              )
+              s = s.replace(
+                  'applicationId "com.example.app"',
+                  'applicationId "com.abdullahataya.fooddistribution"'
+              )
+              gradle.write_text(s)
+          PY
 
           npx cap sync android
 
       - name: Build APK
-        working-directory: ${{ env.PROJECT_DIR }}/android
+        working-directory: ${{ steps.prepare.outputs.project_dir }}/android
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Copy APK
+        working-directory: ${{ steps.prepare.outputs.project_dir }}
+        run: |
+          mkdir -p app-build
+          APK=$(find android/app/build/outputs/apk/debug -name "*.apk" | head -n 1)
+          test -f "$APK"
+          cp "$APK" app-build/AlAtaya-debug.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: AlAtaya-Android-APK
-          path: ${{ env.PROJECT_DIR }}/android/app/build/outputs/apk/debug/app-debug.apk
+          path: ${{ steps.prepare.outputs.project_dir }}/app-build/AlAtaya-debug.apk
