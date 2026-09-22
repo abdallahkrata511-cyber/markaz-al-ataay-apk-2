@@ -7,9 +7,6 @@ on:
       - main
       - master
 
-permissions:
-  contents: write
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -17,6 +14,20 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Extract complete project
+        run: |
+          ZIP=$(find . -maxdepth 1 -name "*.zip" | head -n 1)
+          if [ -n "$ZIP" ]; then
+            mkdir -p /tmp/alataya
+            unzip -q "$ZIP" -d /tmp/alataya
+            ROOT=$(find /tmp/alataya -mindepth 1 -maxdepth 1 -type d | head -n 1)
+            cp -a "$ROOT"/. .
+            rm -rf /tmp/alataya
+          fi
+
+          test -f package.json
+          test -f src/main.tsx
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -48,43 +59,6 @@ jobs:
           cp native/android/com/abdullahataya/fooddistribution/*.java \
             android/app/src/main/java/com/abdullahataya/fooddistribution/
 
-          python3 - <<'PY'
-          from pathlib import Path
-
-          manifest = Path("android/app/src/main/AndroidManifest.xml")
-          s = manifest.read_text()
-
-          permissions = """
-              <uses-permission android:name="android.permission.BLUETOOTH" />
-              <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
-              <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-              <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
-          """
-
-          if "android.permission.BLUETOOTH_CONNECT" not in s:
-              s = s.replace("<application", permissions + "\n    <application", 1)
-
-          s = s.replace(
-              'android:name=".MainActivity"',
-              'android:name="com.abdullahataya.fooddistribution.MainActivity"'
-          )
-
-          manifest.write_text(s)
-
-          gradle = Path("android/app/build.gradle")
-          if gradle.exists():
-              s = gradle.read_text()
-              s = s.replace(
-                  'namespace "com.example.app"',
-                  'namespace "com.abdullahataya.fooddistribution"'
-              )
-              s = s.replace(
-                  'applicationId "com.example.app"',
-                  'applicationId "com.abdullahataya.fooddistribution"'
-              )
-              gradle.write_text(s)
-          PY
-
           npx cap sync android
 
       - name: Build APK
@@ -93,15 +67,8 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon --stacktrace
 
-      - name: Prepare APK
-        run: |
-          mkdir -p app-build
-          APK=$(find android/app/build/outputs/apk/debug -name "*.apk" | head -n 1)
-          test -f "$APK"
-          cp "$APK" app-build/AlAtaya-debug.apk
-
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: AlAtaya-Android-APK
-          path: app-build/AlAtaya-debug.apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
